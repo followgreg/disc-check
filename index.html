@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Disc Check">
+<title>Disc Check</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/zxing-js/0.20.0/zxing.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --border: #2a2a2a;
+    --text: #e8e8e8;
+    --muted: #666;
+    --owned: #22c55e;
+    --owned-bg: #052e16;
+    --not-owned: #ef4444;
+    --not-owned-bg: #2d0707;
+    --accent: #c8a96e;
+    --scan-line: rgba(200, 169, 110, 0.7);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+
+  header {
+    padding: 16px 20px 12px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  header h1 {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  #header-meta {
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+  }
+
+  /* Loading screen */
+  #init-screen {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    z-index: 200;
+  }
+
+  #init-screen h2 {
+    font-size: 22px;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  #init-screen p {
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  #init-screen.hidden { display: none; }
+
+  .big-spinner {
+    width: 36px; height: 36px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  #init-error {
+    display: none;
+    padding: 16px 24px;
+    background: var(--not-owned-bg);
+    border: 1px solid var(--not-owned);
+    border-radius: 10px;
+    font-size: 13px;
+    color: var(--not-owned);
+    text-align: center;
+    max-width: 280px;
+  }
+
+  #btn-retry {
+    padding: 10px 24px;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    display: none;
+  }
+
+  /* Camera */
+  #camera-section {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    max-height: 340px;
+    overflow: hidden;
+    background: #000;
+  }
+
+  #video {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .scan-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  .scan-frame {
+    position: relative;
+    width: 72%;
+    height: 26%;
+  }
+
+  .corner-tl, .corner-tr, .corner-bl, .corner-br {
+    content: '';
+    position: absolute;
+    width: 22px; height: 22px;
+    border-color: var(--accent);
+    border-style: solid;
+  }
+  .corner-tl { top: 0; left: 0; border-width: 3px 0 0 3px; }
+  .corner-tr { top: 0; right: 0; border-width: 3px 3px 0 0; }
+  .corner-bl { bottom: 0; left: 0; border-width: 0 0 3px 3px; }
+  .corner-br { bottom: 0; right: 0; border-width: 0 3px 3px 0; }
+
+  .scan-line {
+    position: absolute;
+    left: 0; right: 0;
+    height: 2px;
+    background: var(--scan-line);
+    box-shadow: 0 0 8px var(--scan-line);
+    animation: scanMove 2s ease-in-out infinite;
+  }
+  @keyframes scanMove { 0%,100% { top: 8%; } 50% { top: 88%; } }
+
+  #camera-status {
+    position: absolute;
+    bottom: 10px;
+    left: 0; right: 0;
+    text-align: center;
+    font-size: 12px;
+    color: rgba(255,255,255,0.45);
+    letter-spacing: 0.05em;
+  }
+
+  /* Controls */
+  #controls {
+    padding: 14px 20px;
+    display: flex;
+    gap: 10px;
+  }
+
+  button {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: none;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.03em;
+    transition: opacity 0.15s;
+  }
+  button:active { opacity: 0.7; }
+
+  #btn-scan { background: var(--accent); color: #000; }
+  #btn-scan.scanning { background: var(--border); color: var(--muted); }
+
+  #btn-manual {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    flex: 0 0 auto;
+    padding: 12px 16px;
+  }
+
+  /* Loading indicator */
+  #loading-state {
+    display: none;
+    padding: 16px 20px;
+    color: var(--muted);
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #loading-state.hidden { display: none !important; }
+
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Result */
+  #result {
+    margin: 0 20px 16px;
+    border-radius: 12px;
+    overflow: hidden;
+    display: none;
+  }
+  #result.owned { background: var(--owned-bg); border: 1.5px solid var(--owned); }
+  #result.not-owned { background: var(--not-owned-bg); border: 1.5px solid var(--not-owned); }
+  #result.unknown { background: var(--surface); border: 1.5px solid var(--border); }
+
+  .result-header {
+    padding: 16px 20px 10px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .result-icon { font-size: 30px; line-height: 1; }
+  .result-verdict { flex: 1; }
+  .result-verdict strong {
+    display: block;
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+  .owned .result-verdict strong { color: var(--owned); }
+  .not-owned .result-verdict strong { color: var(--not-owned); }
+  .unknown .result-verdict strong { color: var(--muted); }
+  .result-verdict span { font-size: 11px; color: var(--muted); letter-spacing: 0.05em; }
+
+  .result-body {
+    padding: 10px 20px 16px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .result-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; line-height: 1.3; }
+  .result-meta { font-size: 12px; color: var(--muted); }
+  .result-upc { margin-top: 8px; font-size: 11px; color: var(--muted); font-family: monospace; letter-spacing: 0.08em; }
+
+  /* Manual modal */
+  #manual-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 100;
+    align-items: flex-end;
+  }
+  #manual-modal.open { display: flex; }
+
+  .modal-sheet {
+    background: var(--surface);
+    border-radius: 16px 16px 0 0;
+    padding: 20px;
+    width: 100%;
+    border-top: 1px solid var(--border);
+  }
+  .modal-sheet h3 { font-size: 13px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 12px; }
+  .modal-sheet input {
+    width: 100%; padding: 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 16px;
+    font-family: monospace;
+    letter-spacing: 0.1em;
+    margin-bottom: 12px;
+    outline: none;
+  }
+  .modal-sheet input:focus { border-color: var(--accent); }
+  .modal-actions { display: flex; gap: 10px; }
+  #btn-lookup { background: var(--accent); color: #000; }
+  #btn-cancel { background: var(--border); color: var(--text); }
+
+  /* Search */
+  #search-section {
+    padding: 0 20px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .search-wrap { position: relative; }
+  .search-wrap input {
+    width: 100%; padding: 10px 14px 10px 36px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 15px;
+    outline: none;
+  }
+  .search-wrap input:focus { border-color: var(--accent); }
+  .search-icon {
+    position: absolute; left: 12px; top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted); font-size: 16px; pointer-events: none;
+  }
+
+  /* Collection browser */
+  #collection-section { padding: 12px 20px 0; }
+  .section-label {
+    font-size: 11px; color: var(--muted);
+    letter-spacing: 0.1em; text-transform: uppercase;
+    margin-bottom: 10px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #toggle-collection {
+    background: none; border: 1px solid var(--border);
+    color: var(--muted); font-size: 11px;
+    padding: 4px 10px; border-radius: 4px;
+    flex: 0 0 auto; letter-spacing: 0.04em;
+  }
+  #collection-list { display: none; padding-bottom: 40px; }
+  #collection-list.open { display: block; }
+  .collection-item {
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .collection-item:last-child { border-bottom: none; }
+
+  /* Refresh button */
+  #btn-refresh {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 11px;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    letter-spacing: 0.04em;
+    flex: 0 0 auto;
+  }
+</style>
+</head>
+<body>
+
+<!-- Init loading screen -->
+<div id="init-screen">
+  <div class="big-spinner"></div>
+  <h2>Disc Check</h2>
+  <p id="init-msg">Loading your collection…</p>
+  <div id="init-error"></div>
+  <button id="btn-retry" onclick="loadCollection()">Retry</button>
+</div>
+
+<header>
+  <h1>Disc Check</h1>
+  <span id="header-meta">Loading…</span>
+</header>
+
+<div id="camera-section">
+  <video id="video" autoplay muted playsinline></video>
+  <div class="scan-overlay">
+    <div class="scan-frame">
+      <div class="corner-tl"></div>
+      <div class="corner-tr"></div>
+      <div class="corner-bl"></div>
+      <div class="corner-br"></div>
+      <div class="scan-line"></div>
+    </div>
+  </div>
+  <div id="camera-status">Tap "Start Scan" to activate camera</div>
+</div>
+
+<div id="controls">
+  <button id="btn-scan" onclick="toggleScan()">Start Scan</button>
+  <button id="btn-manual" onclick="openManual()">Enter UPC</button>
+</div>
+
+<div id="loading-state" class="hidden">
+  <div class="spinner"></div>
+  <span>Looking up disc…</span>
+</div>
+
+<div id="result"></div>
+
+<div id="search-section">
+  <div class="search-wrap">
+    <span class="search-icon">⌕</span>
+    <input type="text" id="search-input" placeholder="Search your collection…" oninput="filterCollection()">
+  </div>
+</div>
+
+<div id="collection-section">
+  <div class="section-label">
+    <span id="collection-label">Collection</span>
+    <div style="display:flex;gap:12px;align-items:center;">
+      <button id="btn-refresh" onclick="loadCollection(true)">↻ Refresh</button>
+      <button id="toggle-collection" onclick="toggleCollectionList()">Show</button>
+    </div>
+  </div>
+  <div id="collection-list"></div>
+</div>
+
+<div id="manual-modal">
+  <div class="modal-sheet">
+    <h3>Enter Barcode</h3>
+    <input type="tel" id="manual-input" placeholder="e.g. 025192351426" maxlength="14" inputmode="numeric">
+    <div class="modal-actions">
+      <button id="btn-cancel" onclick="closeManual()">Cancel</button>
+      <button id="btn-lookup" onclick="lookupManual()">Look Up</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+const SHEET_ID = '1YvL58nwBx2WbvzmVruiedc5QF1z--lXeRuuGzUQrnd8';
+const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=0`;
+const CACHE_KEY = 'disc_check_collection';
+const CACHE_TS_KEY = 'disc_check_ts';
+const CACHE_TTL = 1000 * 60 * 60 * 6; // 6 hours
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let collection = []; // lowercase normalized titles
+let displayCollection = []; // display-cased sorted
+let collectionVisible = false;
+
+// ─── LOAD COLLECTION FROM SHEETS ─────────────────────────────────────────────
+async function loadCollection(forceRefresh = false) {
+  const initScreen = document.getElementById('init-screen');
+  const initMsg = document.getElementById('init-msg');
+  const initError = document.getElementById('init-error');
+  const btnRetry = document.getElementById('btn-retry');
+
+  initScreen.classList.remove('hidden');
+  initError.style.display = 'none';
+  btnRetry.style.display = 'none';
+  initMsg.textContent = 'Loading your collection…';
+
+  // Try cache first
+  if (!forceRefresh) {
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      const ts = parseInt(localStorage.getItem(CACHE_TS_KEY) || '0');
+      if (cached && Date.now() - ts < CACHE_TTL) {
+        const titles = JSON.parse(cached);
+        if (titles.length > 0) {
+          setCollection(titles);
+          initScreen.classList.add('hidden');
+          return;
+        }
+      }
+    } catch(e) {}
+  }
+
+  try {
+    initMsg.textContent = 'Fetching from Google Sheets…';
+    const resp = await fetch(CSV_URL);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const csv = await resp.text();
+    const titles = parseCSV(csv);
+    if (titles.length === 0) throw new Error('No titles found in sheet');
+
+    // Cache it
+    localStorage.setItem(CACHE_KEY, JSON.stringify(titles));
+    localStorage.setItem(CACHE_TS_KEY, Date.now().toString());
+
+    setCollection(titles);
+    initScreen.classList.add('hidden');
+  } catch(err) {
+    initMsg.textContent = '';
+    initError.style.display = 'block';
+    initError.textContent = `Couldn't load collection: ${err.message}`;
+    btnRetry.style.display = 'block';
+  }
+}
+
+function parseCSV(csv) {
+  const lines = csv.split('\n');
+  const titles = [];
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim();
+    if (!line) continue;
+    // Strip quotes if present
+    if (line.startsWith('"') && line.endsWith('"')) {
+      line = line.slice(1, -1).replace(/""/g, '"');
+    }
+    // Skip header row if it looks like one
+    if (i === 0 && /^(title|movie|film|name)/i.test(line)) continue;
+    if (line) titles.push(line);
+  }
+  return titles;
+}
+
+function setCollection(titles) {
+  collection = titles.map(t => t.toLowerCase());
+  displayCollection = [...titles].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: 'base' })
+  );
+  document.getElementById('header-meta').textContent =
+    `${titles.length} titles · Live from Sheets`;
+  document.getElementById('collection-label').textContent =
+    `Your Collection (${titles.length})`;
+  renderCollection(displayCollection);
+}
+
+// ─── NORMALIZE & MATCH ────────────────────────────────────────────────────────
+function normalize(str) {
+  return str.toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isOwned(title) {
+  if (!title) return false;
+  const q = normalize(title);
+  // Strip common leading articles for matching
+  const qStripped = q.replace(/^(the |a |an )/, '');
+
+  return collection.some(item => {
+    const n = normalize(item);
+    const nStripped = n.replace(/^(the |a |an )/, '');
+    return n === q ||
+           nStripped === qStripped ||
+           n.includes(q) ||
+           q.includes(n) ||
+           nStripped.includes(qStripped) ||
+           qStripped.includes(nStripped);
+  });
+}
+
+// ─── BARCODE LOOKUP ───────────────────────────────────────────────────────────
+async function lookupUPC(upc) {
+  setLoading(true);
+  hideResult();
+
+  let title = null;
+  let source = null;
+
+  // Try UPCitemdb (free tier ~100/day, plenty for personal use)
+  try {
+    const r = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${upc}`);
+    if (r.ok) {
+      const d = await r.json();
+      if (d.items && d.items[0] && d.items[0].title) {
+        title = d.items[0].title;
+        source = 'upcitemdb';
+      }
+    }
+  } catch(e) {}
+
+  // Fallback: Open UPC Database
+  if (!title) {
+    try {
+      const r = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${upc}`, {
+        headers: { 'Accept': 'application/json' }
+      });
+    } catch(e) {}
+  }
+
+  setLoading(false);
+  showResult(upc, title, source);
+}
+
+// ─── RESULT DISPLAY ───────────────────────────────────────────────────────────
+function showResult(upc, title, source) {
+  const el = document.getElementById('result');
+
+  if (!title) {
+    el.className = 'unknown';
+    el.style.display = 'block';
+    el.innerHTML = `
+      <div class="result-header">
+        <div class="result-icon">❓</div>
+        <div class="result-verdict">
+          <strong>Unknown Disc</strong>
+          <span>UPC NOT FOUND</span>
+        </div>
+      </div>
+      <div class="result-body">
+        <div class="result-meta">Not in barcode database. Search your collection by title below.</div>
+        <div class="result-upc">${upc}</div>
+      </div>`;
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    return;
+  }
+
+  const owned = isOwned(title);
+  el.className = owned ? 'owned' : 'not-owned';
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div class="result-header">
+      <div class="result-icon">${owned ? '✅' : '❌'}</div>
+      <div class="result-verdict">
+        <strong>${owned ? 'You Own This' : "Don't Have It"}</strong>
+        <span>${owned ? 'IN YOUR COLLECTION' : 'NOT IN COLLECTION'}</span>
+      </div>
+    </div>
+    <div class="result-body">
+      <div class="result-title">${escHtml(title)}</div>
+      <div class="result-upc">${upc}</div>
+    </div>`;
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function hideResult() {
+  document.getElementById('result').style.display = 'none';
+}
+
+function setLoading(on) {
+  const el = document.getElementById('loading-state');
+  if (on) el.classList.remove('hidden');
+  else el.classList.add('hidden');
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── SCANNER ─────────────────────────────────────────────────────────────────
+let codeReader = null;
+let scanning = false;
+let lastScanned = null;
+let lastScannedTime = 0;
+
+async function toggleScan() {
+  if (scanning) stopScan();
+  else startScan();
+}
+
+async function startScan() {
+  if (!window.ZXing) { setStatus('Scanner not available'); return; }
+
+  codeReader = new ZXing.BrowserMultiFormatReader();
+  scanning = true;
+  document.getElementById('btn-scan').textContent = 'Stop Scan';
+  document.getElementById('btn-scan').classList.add('scanning');
+  setStatus('Aim at barcode…');
+
+  try {
+    const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+    const back = devices.find(d =>
+      /back|rear|environment/i.test(d.label)
+    ) || devices[devices.length - 1];
+
+    await codeReader.decodeFromVideoDevice(
+      back ? back.deviceId : undefined,
+      'video',
+      (result, err) => {
+        if (result) {
+          const text = result.getText();
+          const now = Date.now();
+          if (text === lastScanned && now - lastScannedTime < 3000) return;
+          lastScanned = text;
+          lastScannedTime = now;
+          if (/^\d{8,14}$/.test(text)) {
+            if (navigator.vibrate) navigator.vibrate(80);
+            setStatus(`Scanned: ${text}`);
+            lookupUPC(text);
+          }
+        }
+      }
+    );
+  } catch(e) {
+    setStatus('Camera denied — use "Enter UPC" instead');
+    stopScan();
+  }
+}
+
+function stopScan() {
+  if (codeReader) { codeReader.reset(); codeReader = null; }
+  scanning = false;
+  document.getElementById('btn-scan').textContent = 'Start Scan';
+  document.getElementById('btn-scan').classList.remove('scanning');
+  setStatus('Tap "Start Scan" to activate camera');
+}
+
+function setStatus(msg) {
+  document.getElementById('camera-status').textContent = msg;
+}
+
+// ─── MANUAL INPUT ─────────────────────────────────────────────────────────────
+function openManual() {
+  document.getElementById('manual-modal').classList.add('open');
+  setTimeout(() => document.getElementById('manual-input').focus(), 100);
+}
+function closeManual() {
+  document.getElementById('manual-modal').classList.remove('open');
+  document.getElementById('manual-input').value = '';
+}
+function lookupManual() {
+  const val = document.getElementById('manual-input').value.trim();
+  if (val.length < 8) return;
+  closeManual();
+  lookupUPC(val);
+}
+document.getElementById('manual-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') lookupManual();
+});
+
+// ─── COLLECTION BROWSER ───────────────────────────────────────────────────────
+function renderCollection(items) {
+  const list = document.getElementById('collection-list');
+  list.innerHTML = items.map(t =>
+    `<div class="collection-item">${escHtml(t)}</div>`
+  ).join('');
+  document.getElementById('collection-label').textContent =
+    `Your Collection (${items.length})`;
+}
+
+function filterCollection() {
+  const q = document.getElementById('search-input').value.toLowerCase().trim();
+  if (!collectionVisible && q.length > 0) {
+    collectionVisible = true;
+    document.getElementById('collection-list').classList.add('open');
+    document.getElementById('toggle-collection').textContent = 'Hide';
+  }
+  const items = q
+    ? displayCollection.filter(t => t.toLowerCase().includes(q))
+    : displayCollection;
+  renderCollection(items);
+}
+
+function toggleCollectionList() {
+  collectionVisible = !collectionVisible;
+  const list = document.getElementById('collection-list');
+  const btn = document.getElementById('toggle-collection');
+  if (collectionVisible) {
+    list.classList.add('open');
+    btn.textContent = 'Hide';
+    filterCollection();
+  } else {
+    list.classList.remove('open');
+    btn.textContent = 'Show';
+    document.getElementById('search-input').value = '';
+  }
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+loadCollection();
+</script>
+</body>
+</html>
